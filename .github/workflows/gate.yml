@@ -1,0 +1,38 @@
+name: gate
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  witness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch witness @v0.2
+        run: git clone --depth 1 --branch v0.2 https://github.com/sjgant80-hub/witness.git .witness
+      - name: Tests must pass before anything is mutated
+        run: |
+          node audit-chain.test.mjs
+          node audit.test.mjs
+      - name: Mutation gate — the shared chain
+        run: node .witness/witness.mjs mutate audit-chain.mjs --cap 400 --baseline witness.audit-chain.baseline.json --test "node audit-chain.test.mjs" | tee g1.out
+      - name: Mutation gate — this tool's byte layout
+        run: node .witness/witness.mjs mutate audit.mjs --cap 400 --baseline witness.audit.baseline.json --test "node audit.test.mjs" | tee g2.out
+      - name: Refuse anything short of clean
+        run: |
+          node -e "
+            const fs=require('fs'); let bad=0;
+            for (const f of ['g1.out','g2.out']) {
+              const m=/\"clean\":\s*(true|false)/.exec(fs.readFileSync(f,'utf8'));
+              if(!m){console.error(f+': no verdict');bad++;continue}
+              if(m[1]!=='true'){console.error(f+': mutants survived — test-theatre');bad++;continue}
+              console.log(f+': clean');
+            }
+            process.exit(bad?1:0);
+          "
+      # ⚑ THE SHIPPED PAGE MUST CONTAIN THE KERNEL THAT WAS JUST GATED, or the gate is green about a
+      # file the tool does not use — the most comfortable kind of lie.
+      - name: The shipped page must match the gated kernel
+        run: |
+          node build-page.mjs
+          git diff --exit-code index.html || (echo "index.html is stale — run node build-page.mjs and commit it" && exit 1)
